@@ -321,6 +321,16 @@ if(APPLE)
       $<$<COMPILE_LANGUAGE:CXX>: -fvisibility=default>)
 endif()
 
+find_library(INC_COMPUTE 
+  NAMES inccompute
+  PATHS ${TORCH_ROOT}/third_party/inccompute/build
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+target_link_libraries(torch_python PRIVATE ${INC_COMPUTE})
+target_include_directories(torch_python PRIVATE ${TORCH_ROOT}/third_party/inccompute/include)
+
 if(CAFFE2_USE_MKL AND BUILD_LIBTORCHLESS)
 
   # Use the RPATH of the linked libraries

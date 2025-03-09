@@ -24,6 +24,9 @@
 
 #include <ATen/ThreadLocalState.h>
 
+#include <inccompute/quantization_utils.h>
+#include <inccompute/worker.h>
+
 namespace c10d {
 
 constexpr const char* GLOO_BACKEND_NAME = "gloo";

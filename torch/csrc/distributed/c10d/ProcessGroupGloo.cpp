@@ -1398,6 +1398,11 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
       uint64_t seq)
       : AsyncAllreduceWork(context, inputs, std::move(reduceOp), tag, seq) {
     initializeStreamsEvents(inputs, streams, events);
+    
+    const auto& scalarType = inputs[0].scalar_type();
+    this->use_inccompute = inputs.size()==1 && // Means that a single GPU is used per host
++                          reduceOp == ReduceOp::SUM &&
++                          (scalarType == ::at::ScalarType::Float || scalarType == ::at::ScalarType::Int);
 
     // Kick off copy from CUDA tensors to pinned CPU tensors.
     tmp.reserve(inputs.size());
@@ -1412,6 +1417,21 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
     // Synchronize with copy operations.
     for (const auto i : c10::irange(inputs.size())) {
       streams[i].synchronize();
+    }
+
+    GLOO_ENFORCE(tmp.size() == 1);
+
+    const auto& scalarType = tmp[0].scalar_type();
+    if (use_inccompute) {
+      switch(scalarType) {
+        case ::at::ScalarType::Float: {
+          float* data_ptr = getDataPointer<float>(tmp[0]);
+          IncCompute::FixedPointQuantizer quantizer;
+          quantizer.compute_quantization_params(tmp);
+          IncCompute::perform_aggregation<int32_t>(tmp, quantizer, context->rank, context->size);
+          break;
+        }
+      }
     }
 
     // Run allreduce on host side tensors.
@@ -1434,6 +1454,7 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
     }
   }
 
+  bool use_inccompute;
   std::vector<at::Tensor> tmp;
   std::vector<c10::Stream> streams{};
   std::vector<c10::Event> events{};

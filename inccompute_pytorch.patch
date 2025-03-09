@@ -1,0 +1,81 @@
+diff --git a/torch/CMakeLists.txt b/torch/CMakeLists.txt
+index 8b8ebdc6e9..cdbd3a41d9 100644
+--- a/torch/CMakeLists.txt
++++ b/torch/CMakeLists.txt
+@@ -321,6 +321,16 @@ if(APPLE)
+       $<$<COMPILE_LANGUAGE:CXX>: -fvisibility=default>)
+ endif()
+ 
++find_library(INC_COMPUTE 
++  NAMES inccompute
++  PATHS ${TORCH_ROOT}/third_party/inccompute/build
++  NO_DEFAULT_PATH
++  REQUIRED
++)
++
++target_link_libraries(torch_python PRIVATE ${INC_COMPUTE})
++target_include_directories(torch_python PRIVATE ${TORCH_ROOT}/third_party/inccompute/include)
++
+ if(CAFFE2_USE_MKL AND BUILD_LIBTORCHLESS)
+ 
+   # Use the RPATH of the linked libraries
+diff --git a/torch/csrc/distributed/c10d/ProcessGroupGloo.cpp b/torch/csrc/distributed/c10d/ProcessGroupGloo.cpp
+index a9982125f6..8746846f75 100644
+--- a/torch/csrc/distributed/c10d/ProcessGroupGloo.cpp
++++ b/torch/csrc/distributed/c10d/ProcessGroupGloo.cpp
+@@ -1398,6 +1398,11 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
+       uint64_t seq)
+       : AsyncAllreduceWork(context, inputs, std::move(reduceOp), tag, seq) {
+     initializeStreamsEvents(inputs, streams, events);
++    
++    const auto& scalarType = inputs[0].scalar_type();
++    this->use_inccompute = inputs.size()==1 && // Means that a single GPU is used per host
+++                          reduceOp == ReduceOp::SUM &&
+++                          (scalarType == ::at::ScalarType::Float || scalarType == ::at::ScalarType::Int);
+ 
+     // Kick off copy from CUDA tensors to pinned CPU tensors.
+     tmp.reserve(inputs.size());
+@@ -1414,6 +1419,21 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
+       streams[i].synchronize();
+     }
+ 
++    GLOO_ENFORCE(tmp.size() == 1);
++
++    const auto& scalarType = tmp[0].scalar_type();
++    if (use_inccompute) {
++      switch(scalarType) {
++        case ::at::ScalarType::Float: {
++          float* data_ptr = getDataPointer<float>(tmp[0]);
++          IncCompute::FixedPointQuantizer quantizer;
++          quantizer.compute_quantization_params(tmp);
++          IncCompute::perform_aggregation<int32_t>(tmp, quantizer, context->rank, context->size);
++          break;
++        }
++      }
++    }
++
+     // Run allreduce on host side tensors.
+     allreduce(tmp);
+ 
+@@ -1434,6 +1454,7 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
+     }
+   }
+ 
++  bool use_inccompute;
+   std::vector<at::Tensor> tmp;
+   std::vector<c10::Stream> streams{};
+   std::vector<c10::Event> events{};
+diff --git a/torch/csrc/distributed/c10d/ProcessGroupGloo.hpp b/torch/csrc/distributed/c10d/ProcessGroupGloo.hpp
+index b44cba9f35..3844675491 100644
+--- a/torch/csrc/distributed/c10d/ProcessGroupGloo.hpp
++++ b/torch/csrc/distributed/c10d/ProcessGroupGloo.hpp
+@@ -24,6 +24,9 @@
+ 
+ #include <ATen/ThreadLocalState.h>
+ 
++#include <inccompute/quantization_utils.h>
++#include <inccompute/worker.h>
++
+ namespace c10d {
+ 
+ constexpr const char* GLOO_BACKEND_NAME = "gloo";
