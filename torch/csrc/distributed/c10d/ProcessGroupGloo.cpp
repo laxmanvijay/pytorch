@@ -1426,9 +1426,13 @@ class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
       switch(scalarType) {
         case ::at::ScalarType::Float: {
           float* data_ptr = getDataPointer<float>(tmp[0]);
+          vector<float> values(data_ptr, data_ptr + tmp.size());
           IncCompute::FixedPointQuantizer quantizer;
-          quantizer.compute_quantization_params(tmp);
-          IncCompute::perform_aggregation<int32_t>(tmp, quantizer, context->rank, context->size);
+          quantizer.compute_quantization_params(values);
+          IncCompute::perform_aggregation<int32_t>(values, quantizer, context->rank, context->size);
+
+          // copy back to the tensor
+          std::copy(values.begin(), values.end(), data_ptr);
           break;
         }
       }
